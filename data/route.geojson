@@ -1,0 +1,22 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Event Route"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [2.2945, 48.8584],
+          [78.0421, 27.1751],
+          [-43.2105, -22.9519],
+          [31.1342, 29.9792],
+          [151.2153, -33.8568],
+          [-74.0445, 40.6892]
+        ]
+      }
+    }
+  ]
+}

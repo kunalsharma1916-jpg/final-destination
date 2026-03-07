@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+  <Document>
+    <name>Final Destination — Full Route (Stages 1–25)</name>
+
+    <LookAt>
+      <longitude>77.229509</longitude>
+      <latitude>28.612916</latitude>
+      <altitude>0</altitude>
+      <range>6000000</range>
+      <tilt>35</tilt>
+      <heading>0</heading>
+      <altitudeMode>relativeToGround</altitudeMode>
+    </LookAt>
+
+    <Folder>
+      <name>Stages</name>
+
+      <Placemark><name>01 — India — India Gate (Delhi)</name><Point><coordinates>77.229509,28.612916,0</coordinates></Point></Placemark>
+      <Placemark><name>02 — UAE — Burj Khalifa (Dubai)</name><Point><coordinates>55.274376,25.197197,0</coordinates></Point></Placemark>
+      <Placemark><name>03 — UK — Big Ben (London)</name><Point><coordinates>-0.124625,51.500729,0</coordinates></Point></Placemark>
+      <Placemark><name>04 — Germany — Römer (Frankfurt)</name><Point><coordinates>8.682127,50.110922,0</coordinates></Point></Placemark>
+      <Placemark><name>05 — France — Eiffel Tower (Paris)</name><Point><coordinates>2.294481,48.858370,0</coordinates></Point></Placemark>
+      <Placemark><name>06 — South Africa — Nelson Mandela Square (Johannesburg)</name><Point><coordinates>28.056702,-26.107567,0</coordinates></Point></Placemark>
+      <Placemark><name>07 — Brazil — São Paulo Cathedral (São Paulo)</name><Point><coordinates>-46.633915,-23.550307,0</coordinates></Point></Placemark>
+      <Placemark><name>08 — USA — Statue of Liberty (New York)</name><Point><coordinates>-74.044502,40.689247,0</coordinates></Point></Placemark>
+      <Placemark><name>09 — Canada — CN Tower (Toronto)</name><Point><coordinates>-79.387057,43.642566,0</coordinates></Point></Placemark>
+      <Placemark><name>10 — China — Oriental Pearl Tower (Shanghai)</name><Point><coordinates>121.499809,31.239693,0</coordinates></Point></Placemark>
+      <Placemark><name>11 — Japan — Tokyo Tower (Tokyo)</name><Point><coordinates>139.745433,35.658581,0</coordinates></Point></Placemark>
+      <Placemark><name>12 — Australia — Sydney Opera House (Sydney)</name><Point><coordinates>151.215297,-33.856784,0</coordinates></Point></Placemark>
+      <Placemark><name>13 — Kazakhstan — Bayterek Tower (Astana)</name><Point><coordinates>71.430420,51.128207,0</coordinates></Point></Placemark>
+      <Placemark><name>14 — Malaysia — Petronas Twin Towers (Kuala Lumpur)</name><Point><coordinates>101.712000,3.157900,0</coordinates></Point></Placemark>
+      <Placemark><name>15 — Singapore — Merlion Park (Singapore)</name><Point><coordinates>103.854503,1.286789,0</coordinates></Point></Placemark>
+      <Placemark><name>16 — Chile — Moai Statues (Easter Island)</name><Point><coordinates>-109.276700,-27.125300,0</coordinates></Point></Placemark>
+      <Placemark><name>17 — Argentina — Iguazu Falls</name><Point><coordinates>-54.436700,-25.695300,0</coordinates></Point></Placemark>
+      <Placemark><name>18 — Peru — Machu Picchu</name><Point><coordinates>-72.545000,-13.163100,0</coordinates></Point></Placemark>
+      <Placemark><name>19 — Nigeria — Zuma Rock</name><Point><coordinates>7.239500,9.141200,0</coordinates></Point></Placemark>
+      <Placemark><name>20 — Kenya — Maasai Mara National Reserve</name><Point><coordinates>35.008100,-1.406100,0</coordinates></Point></Placemark>
+      <Placemark><name>21 — Egypt — Great Pyramid of Giza</name><Point><coordinates>31.134200,29.979200,0</coordinates></Point></Placemark>
+      <Placemark><name>22 — Greece — Acropolis of Athens (Parthenon)</name><Point><coordinates>23.725700,37.971500,0</coordinates></Point></Placemark>
+      <Placemark><name>23 — Romania — Bran Castle (Dracula’s Castle)</name><Point><coordinates>25.367600,45.515600,0</coordinates></Point></Placemark>
+      <Placemark><name>24 — Poland — Auschwitz-Birkenau Memorial &amp; Museum</name><Point><coordinates>19.178300,50.035900,0</coordinates></Point></Placemark>
+      <Placemark><name>25 — Qatar — The Pearl-Qatar</name><Point><coordinates>51.550000,25.371500,0</coordinates></Point></Placemark>
+
+    </Folder>
+
+    <Placemark>
+      <name>Route Path (Stages 1–25)</name>
+      <Style>
+        <LineStyle>
+          <color>ff00ffff</color>
+          <width>5</width>
+        </LineStyle>
+      </Style>
+      <LineString>
+        <tessellate>1</tessellate>
+        <coordinates>
+          77.229509,28.612916,0
+          55.274376,25.197197,0
+          -0.124625,51.500729,0
+          8.682127,50.110922,0
+          2.294481,48.858370,0
+          28.056702,-26.107567,0
+          -46.633915,-23.550307,0
+          -74.044502,40.689247,0
+          -79.387057,43.642566,0
+          121.499809,31.239693,0
+          139.745433,35.658581,0
+          151.215297,-33.856784,0
+          71.430420,51.128207,0
+          101.712000,3.157900,0
+          103.854503,1.286789,0
+          -109.276700,-27.125300,0
+          -54.436700,-25.695300,0
+          -72.545000,-13.163100,0
+          7.239500,9.141200,0
+          35.008100,-1.406100,0
+          31.134200,29.979200,0
+          23.725700,37.971500,0
+          25.367600,45.515600,0
+          19.178300,50.035900,0
+          51.550000,25.371500,0
+        </coordinates>
+      </LineString>
+    </Placemark>
+
+  </Document>
+</kml>

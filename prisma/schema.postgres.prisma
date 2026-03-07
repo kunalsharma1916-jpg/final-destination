@@ -1,0 +1,171 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum SessionStatus {
+  LOBBY
+  LIVE
+  PAUSED
+  ENDED
+}
+
+enum ScoringMode {
+  CLASSIC
+  BUDGET
+}
+
+enum QuestionState {
+  IDLE
+  OPEN
+  REVEALED
+}
+
+enum SessionPhase {
+  DRAFT
+  LOBBY
+  QUESTION_LIVE
+  QUESTION_CLOSED
+  REVEALED
+  PAUSED
+  ENDED
+}
+
+enum QuestionKind {
+  GENERIC
+  HINT
+  MAIN
+}
+
+enum AnswerFormat {
+  MCQ
+  TEXT
+}
+
+model Question {
+  id           String         @id @default(cuid())
+  externalId   String?        @unique
+  prompt       String
+  kind         QuestionKind   @default(GENERIC)
+  answerFormat AnswerFormat   @default(MCQ)
+  acceptedAnswers String?
+  stageNo      Int?
+  roundLabel   String?
+  internalCountry String?
+  internalLocation String?
+  latitude     Float?
+  longitude    Float?
+  timeLimitSec Int            @default(20)
+  points       Int            @default(1000)
+  explanation  String?
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+  options      Option[]
+  quizLinks    QuizQuestion[]
+  answers      Answer[]
+}
+
+model Option {
+  id         String   @id @default(cuid())
+  questionId String
+  text       String
+  isCorrect  Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  question   Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  answers    Answer[]
+}
+
+model Quiz {
+  id              String         @id @default(cuid())
+  title           String
+  scoringMode     ScoringMode    @default(CLASSIC)
+  initialBudget   Int            @default(0)
+  shuffleQuestions Boolean       @default(false)
+  shuffleOptions  Boolean        @default(false)
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  questions       QuizQuestion[]
+  sessions        Session[]
+}
+
+model QuizQuestion {
+  id         String   @id @default(cuid())
+  quizId     String
+  questionId String
+  order      Int
+  quiz       Quiz     @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  question   Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@unique([quizId, order])
+}
+
+model Session {
+  id                   String         @id @default(cuid())
+  name                 String?
+  quizId               String
+  scoringMode          ScoringMode    @default(CLASSIC)
+  initialBudget        Int            @default(0)
+  status               SessionStatus  @default(LOBBY)
+  phase                SessionPhase   @default(DRAFT)
+  pausedFromPhase      SessionPhase?
+  currentQuestionIndex Int            @default(0)
+  questionState        QuestionState  @default(IDLE)
+  questionStartAt      DateTime?
+  questionEndAt        DateTime?
+  pauseRemainingSec    Int?
+  destinationIndex     Int            @default(0)
+  destinationCount     Int            @default(0)
+  createdAt            DateTime       @default(now())
+  updatedAt            DateTime       @updatedAt
+  quiz                 Quiz           @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  teams                Team[]
+  answers              Answer[]
+}
+
+model Team {
+  id        String   @id @default(cuid())
+  code      String
+  sessionId String
+  createdAt DateTime @default(now())
+  session   Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  answers   Answer[]
+
+  @@unique([code, sessionId])
+}
+
+model ParticipantAccount {
+  id           String   @id @default(cuid())
+  username     String   @unique
+  displayName  String?
+  teamCode     String   @unique
+  passwordHash String
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  lastLoginAt  DateTime?
+
+  @@index([teamCode, isActive])
+}
+
+model Answer {
+  id            String   @id @default(cuid())
+  sessionId     String
+  teamId        String
+  questionId    String
+  optionId      String?
+  answerText    String?
+  answeredAt    DateTime @default(now())
+  isCorrect     Boolean  @default(false)
+  pointsAwarded Int      @default(0)
+  session       Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  team          Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  question      Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  option        Option?  @relation(fields: [optionId], references: [id], onDelete: SetNull)
+
+  @@unique([sessionId, teamId, questionId])
+  @@index([sessionId, questionId])
+}

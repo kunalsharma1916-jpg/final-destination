@@ -1,0 +1,32 @@
+
+> final-destination@1.0.0 dev:safe
+> npm run dev:kill && npm run dev:clean && npm run dev
+
+
+> final-destination@1.0.0 dev:kill
+> powershell -NoProfile -Command "$p=(Get-NetTCPConnection -LocalPort 3000 -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique); if($p){$p | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }}"
+
+
+> final-destination@1.0.0 dev:clean
+> node scripts/clean-next.mjs
+
+Cleared .next cache
+
+> final-destination@1.0.0 dev
+> next dev -H 0.0.0.0 -p 3000
+
+   ▲ Next.js 15.5.12
+   - Local:        http://localhost:3000
+   - Network:      http://0.0.0.0:3000
+   - Environments: .env.local, .env
+
+ ✓ Starting...
+ ✓ Ready in 2.4s
+ ○ Compiling /admin/questions ...
+ ✓ Compiled /participant in 6.2s (1404 modules)
+ GET /api/questions 200 in 6639ms
+ GET /screen/display 200 in 6169ms
+ GET /participant 200 in 5767ms
+ GET /admin/questions 200 in 6428ms
+ GET /api/questions 200 in 59ms
+[?25h
