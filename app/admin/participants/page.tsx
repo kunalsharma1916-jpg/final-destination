@@ -26,6 +26,19 @@ export default function AdminParticipantsPage() {
   });
   const [busy, setBusy] = useState(false);
 
+  const validateCreateForm = () => {
+    const username = form.username.trim();
+    const teamCode = form.teamCode.trim().toUpperCase();
+    const password = form.password;
+
+    if (username.length < 3) return "Username must be at least 3 characters";
+    if (!/^[A-Z0-9_-]{2,24}$/.test(teamCode)) return "Team code must be 2-24 chars (A-Z, 0-9, _ or -)";
+    if (password.length < 8) return "Password must be at least 8 characters";
+    return null;
+  };
+
+  const createFormError = validateCreateForm();
+
   const load = async () => {
     const res = await fetch("/api/admin/participants", withAuthHeaders({ cache: "no-store" }, "admin"));
     const payload = await readJsonSafe<{ participants?: Participant[]; message?: string }>(res);
@@ -41,7 +54,14 @@ export default function AdminParticipantsPage() {
   }, []);
 
   const create = async () => {
+    const validationError = validateCreateForm();
+    if (validationError) {
+      setMsg(validationError);
+      return;
+    }
+
     setBusy(true);
+    setMsg(null);
     const res = await fetch(
       "/api/admin/participants",
       withAuthHeaders(
@@ -100,6 +120,7 @@ export default function AdminParticipantsPage() {
             placeholder="username"
             value={form.username}
             onChange={(e) => setForm((v) => ({ ...v, username: e.target.value }))}
+            maxLength={40}
           />
           <input
             placeholder="display name (optional)"
@@ -109,15 +130,19 @@ export default function AdminParticipantsPage() {
           <input
             placeholder="team code (e.g. TEAM01)"
             value={form.teamCode}
-            onChange={(e) => setForm((v) => ({ ...v, teamCode: e.target.value.toUpperCase() }))}
+            onChange={(e) => setForm((v) => ({ ...v, teamCode: e.target.value.toUpperCase().replace(/\s+/g, "") }))}
+            maxLength={24}
           />
           <input
             placeholder="password"
             type="password"
             value={form.password}
             onChange={(e) => setForm((v) => ({ ...v, password: e.target.value }))}
+            minLength={8}
+            maxLength={100}
           />
         </div>
+        <p className="mt-2 text-xs text-slate-400">Required: username (3+), team code (e.g. TEAM01), password (8+).</p>
         <label className="mt-2 flex items-center gap-2">
           <input
             type="checkbox"
@@ -126,7 +151,7 @@ export default function AdminParticipantsPage() {
           />
           <span>Active</span>
         </label>
-        <button className="mt-3" onClick={() => void create()} disabled={busy}>
+        <button className="mt-3" onClick={() => void create()} disabled={busy || Boolean(createFormError)}>
           {busy ? "Creating..." : "Create Login"}
         </button>
         {msg && <p className="mt-2 text-sm text-amber-300">{msg}</p>}

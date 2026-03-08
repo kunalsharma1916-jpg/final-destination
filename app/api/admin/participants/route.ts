@@ -47,7 +47,15 @@ export async function POST(req: Request) {
 
   const body = await req.json().catch(() => null);
   const parsed = createSchema.safeParse(body);
-  if (!parsed.success) return badRequest("Invalid participant payload");
+  if (!parsed.success) {
+    const first = parsed.error.issues[0];
+    return badRequest(first?.message || "Invalid participant payload", 400, {
+      issues: parsed.error.issues.map((issue) => ({
+        field: issue.path.join("."),
+        message: issue.message,
+      })),
+    });
+  }
 
   try {
     const participant = await prisma.participantAccount.create({
