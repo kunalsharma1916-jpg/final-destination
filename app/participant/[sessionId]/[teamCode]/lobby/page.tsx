@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { withAuthHeaders } from "@/lib/client-api";
 import { readJsonSafe } from "@/lib/client-response";
 import { useSessionSocket } from "@/lib/use-session-socket";
@@ -12,6 +13,7 @@ export default function ParticipantLobbyPage({
 }: {
   params: Promise<{ sessionId: string; teamCode: string }>;
 }) {
+  const router = useRouter();
   const [resolved, setResolved] = useState<{ sessionId: string; teamCode: string } | null>(null);
   const [session, setSession] = useState<SessionSnapshot | null>(null);
   const { socket } = useSessionSocket(resolved?.sessionId ?? "none");
@@ -27,11 +29,34 @@ export default function ParticipantLobbyPage({
         `/api/sessions/${resolved.sessionId}?teamCode=${resolved.teamCode}`,
         withAuthHeaders({ cache: "no-store" }, "participant"),
       );
-      const payload = await readJsonSafe<{ session?: SessionSnapshot }>(res);
-      if (res.ok) setSession(payload.session ?? null);
+      const payload = await readJsonSafe<{ session?: SessionSnapshot; message?: string }>(res);
+      if (res.ok) {
+        setSession(payload.session ?? null);
+        return;
+      }
+
+      if (res.status === 404) {
+        const activeRes = await fetch("/api/sessions/active", { cache: "no-store" });
+        const activePayload = await readJsonSafe<{ session?: { id: string } | null }>(activeRes);
+        const activeId = activePayload.session?.id;
+        if (activeRes.ok && activeId && activeId !== resolved.sessionId) {
+          await fetch(
+            `/api/sessions/${activeId}/join`,
+            withAuthHeaders(
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({}),
+              },
+              "participant",
+            ),
+          ).catch(() => null);
+          router.replace(`/participant/${activeId}/${resolved.teamCode}/lobby`);
+        }
+      }
     };
     void load();
-  }, [resolved]);
+  }, [resolved, router]);
 
   useEffect(() => {
     if (!socket) return;

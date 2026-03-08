@@ -26,6 +26,16 @@ export default function ScreenDisplayPage() {
   const [kmlWarning, setKmlWarning] = useState<string | null>(null);
   const { socket } = useSessionSocket(sessionId || "none");
 
+  const resolveBestSessionId = async () => {
+    const activeRes = await fetch("/api/sessions/active", { cache: "no-store" });
+    const activePayload = await readJsonSafe<{ session?: { id: string } | null }>(activeRes);
+    if (activeRes.ok && activePayload.session?.id) return activePayload.session.id;
+
+    const sessionsRes = await fetch("/api/sessions", { cache: "no-store" });
+    const sessionsPayload = await readJsonSafe<{ sessions?: Array<{ id: string }> }>(sessionsRes);
+    return sessionsPayload.sessions?.[0]?.id ?? null;
+  };
+
   useEffect(() => {
     const fromUrl = new URL(window.location.href).searchParams.get("sessionId");
     if (fromUrl) {
@@ -33,16 +43,8 @@ export default function ScreenDisplayPage() {
       return;
     }
     const loadActive = async () => {
-      const res = await fetch("/api/sessions/active", { cache: "no-store" });
-      const payload = await readJsonSafe<{ session?: { id: string }; message?: string }>(res);
-      if (res.ok && payload.session?.id) {
-        setSessionId(payload.session.id);
-        return;
-      }
-      const sessionsRes = await fetch("/api/sessions", { cache: "no-store" });
-      const sessionsPayload = await readJsonSafe<{ sessions?: Array<{ id: string }> }>(sessionsRes);
-      const latest = sessionsPayload.sessions?.[0];
-      if (latest?.id) setSessionId(latest.id);
+      const id = await resolveBestSessionId();
+      if (id) setSessionId(id);
     };
     void loadActive();
   }, []);
@@ -59,6 +61,14 @@ export default function ScreenDisplayPage() {
         leaderboard?: LeaderboardRow[];
       }>(res);
       if (!res.ok) {
+        if (res.status === 404) {
+          const recovered = await resolveBestSessionId();
+          if (recovered && recovered !== sessionId) {
+            setSessionId(recovered);
+            setMsg(`Session ${sessionId} not found. Switched to ${recovered}.`);
+            return;
+          }
+        }
         setMsg(payload.message ?? "Session not found");
         return;
       }
@@ -66,9 +76,10 @@ export default function ScreenDisplayPage() {
       setDestination(payload.destination ?? null);
       setQuestion(payload.question ?? null);
       setLeaderboard(payload.leaderboard ?? []);
+      setMsg(null);
     };
     void load();
-    const timer = setInterval(() => void load(), 3000);
+    const timer = setInterval(() => void load(), 1500);
     return () => clearInterval(timer);
   }, [sessionId]);
 

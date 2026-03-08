@@ -24,6 +24,8 @@ type SessionStatePayload = {
 export default function AdminSessionPage() {
   const [quizzes, setQuizzes] = useState<Quiz[]>([]);
   const [sessionId, setSessionId] = useState<string>("");
+  const [sessionIdInput, setSessionIdInput] = useState<string>("");
+  const [activeSessionId, setActiveSessionId] = useState<string>("");
   const [sessionName, setSessionName] = useState("DRY RUN");
   const [session, setSession] = useState<SessionSnapshot | null>(null);
   const [destination, setDestination] = useState<DestinationState | null>(null);
@@ -37,11 +39,35 @@ export default function AdminSessionPage() {
 
   const { socket } = useSessionSocket(sessionId || "none");
 
-  const refreshState = async (id: string) => {
-    if (!id) return;
+  const resolveBestSessionId = async () => {
+    const activeRes = await fetch("/api/sessions/active", { cache: "no-store" });
+    const activePayload = await readJsonSafe<{ session?: { id: string } | null }>(activeRes);
+    if (activeRes.ok && activePayload.session?.id) {
+      setActiveSessionId(activePayload.session.id);
+      return activePayload.session.id;
+    }
+    const sessionsRes = await fetch("/api/sessions", withAuthHeaders({ cache: "no-store" }, "admin"));
+    const sessionsPayload = await readJsonSafe<{ sessions?: Array<{ id: string }> }>(sessionsRes);
+    const latest = sessionsPayload.sessions?.[0]?.id ?? "";
+    if (latest) setActiveSessionId(latest);
+    return latest || null;
+  };
+
+  const refreshState = async (id: string, allowRecover = true) => {
+    if (!id.trim()) return;
     const res = await fetch(`/api/sessions/${id}`, { cache: "no-store" });
     const payload = await readJsonSafe<SessionStatePayload>(res);
     if (!res.ok) {
+      if (res.status === 404 && allowRecover) {
+        const recovered = await resolveBestSessionId();
+        if (recovered && recovered !== id) {
+          setSessionId(recovered);
+          setSessionIdInput(recovered);
+          setMsg(`Session ${id} not found. Switched to active session ${recovered}.`);
+          await refreshState(recovered, false);
+          return;
+        }
+      }
       setMsg(payload.message ?? "Failed to load session");
       return;
     }
@@ -50,6 +76,7 @@ export default function AdminSessionPage() {
     setQuestion(payload.question ?? null);
     setLeaderboard(payload.leaderboard ?? []);
     setStats(payload.stats ?? null);
+    setMsg(null);
   };
 
   useEffect(() => {
@@ -63,12 +90,20 @@ export default function AdminSessionPage() {
       }
     };
     void loadQuizzes();
+    void (async () => {
+      if (sessionId) return;
+      const initial = await resolveBestSessionId();
+      if (initial) {
+        setSessionId(initial);
+        setSessionIdInput(initial);
+      }
+    })();
   }, []);
 
   useEffect(() => {
     if (!sessionId) return;
     void refreshState(sessionId);
-    const timer = setInterval(() => void refreshState(sessionId), 3000);
+    const timer = setInterval(() => void refreshState(sessionId), 1500);
     return () => clearInterval(timer);
   }, [sessionId]);
 
@@ -150,7 +185,7 @@ export default function AdminSessionPage() {
     setMsg(`${action.toUpperCase()} done`);
     if (payload.session) setSession(payload.session);
     if (payload.question !== undefined) setQuestion(payload.question);
-    await refreshState(sessionId);
+    await refreshState(sessionId, true);
   };
 
   const moveDestination = async (action: "previous" | "next" | "jump") => {
@@ -183,6 +218,7 @@ export default function AdminSessionPage() {
         ? `Jumped to location ${payload.destination?.currentNumber ?? locationNumber}`
         : `Moved ${action}`,
     );
+    await refreshState(sessionId, true);
   };
 
   const topRows = useMemo(() => leaderboard.slice(0, 10), [leaderboard]);
@@ -212,9 +248,25 @@ export default function AdminSessionPage() {
             <span className="mb-1 block text-sm text-slate-300">Session Name</span>
             <input value={sessionName} onChange={(e) => setSessionName(e.target.value)} placeholder="DRY RUN" />
           </label>
-          <label>
+          <label className="md:col-span-2">
             <span className="mb-1 block text-sm text-slate-300">Or Enter Session ID</span>
-            <input value={sessionId} onChange={(e) => setSessionId(e.target.value)} placeholder="session id" />
+            <div className="flex gap-2">
+              <input value={sessionIdInput} onChange={(e) => setSessionIdInput(e.target.value)} placeholder="session id" />
+              <button
+                type="button"
+                onClick={() => {
+                  const next = sessionIdInput.trim();
+                  if (!next) return;
+                  setSessionId(next);
+                  setMsg(null);
+                }}
+              >
+                Load Session
+              </button>
+            </div>
+            <p className="mt-1 text-xs text-slate-400">
+              Active: {activeSessionId || "-"} | Viewing: {sessionId || "-"}
+            </p>
           </label>
           <div className="rounded border border-slate-700 p-3 md:col-span-3">
             <p className="text-sm text-slate-300">Status</p>

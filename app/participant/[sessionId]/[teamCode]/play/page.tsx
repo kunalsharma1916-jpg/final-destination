@@ -2,6 +2,7 @@
 
 import dynamic from "next/dynamic";
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import { OptionButtons } from "@/components/option-buttons";
 import { QuestionCard } from "@/components/question-card";
 import { QuizLeaderboardTable } from "@/components/quiz-leaderboard-table";
@@ -37,6 +38,7 @@ export default function ParticipantPlayPage({
 }: {
   params: Promise<{ sessionId: string; teamCode: string }>;
 }) {
+  const router = useRouter();
   const [resolved, setResolved] = useState<Resolved | null>(null);
   const [session, setSession] = useState<SessionSnapshot | null>(null);
   const [destination, setDestination] = useState<DestinationState | null>(null);
@@ -61,6 +63,26 @@ export default function ParticipantPlayPage({
     );
     const payload = await readJsonSafe<PlayStatePayload>(res);
     if (!res.ok) {
+      if (res.status === 404) {
+        const activeRes = await fetch("/api/sessions/active", { cache: "no-store" });
+        const activePayload = await readJsonSafe<{ session?: { id: string } | null }>(activeRes);
+        const activeId = activePayload.session?.id;
+        if (activeRes.ok && activeId && activeId !== info.sessionId) {
+          await fetch(
+            `/api/sessions/${activeId}/join`,
+            withAuthHeaders(
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({}),
+              },
+              "participant",
+            ),
+          ).catch(() => null);
+          router.replace(`/participant/${activeId}/${info.teamCode}/play`);
+          return;
+        }
+      }
       setMsg(payload.message ?? "Failed to load state");
       return;
     }
@@ -72,6 +94,7 @@ export default function ParticipantPlayPage({
     setSelected(payload.myAnswer?.optionId ?? null);
     setTextAnswer(payload.myAnswer?.answerText ?? "");
     setPointsGained(payload.myAnswer?.pointsAwarded ?? 0);
+    setMsg(null);
   };
 
   useEffect(() => {
@@ -79,7 +102,7 @@ export default function ParticipantPlayPage({
     void load(resolved);
     const timer = setInterval(() => void load(resolved), 3000);
     return () => clearInterval(timer);
-  }, [resolved]);
+  }, [resolved, router]);
 
   useEffect(() => {
     if (!socket || !resolved) return;
