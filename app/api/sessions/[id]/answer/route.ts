@@ -4,9 +4,10 @@ import { badRequest, ok } from "@/lib/http";
 import { emitAnswerStats } from "@/lib/quiz-realtime";
 import { assertAnswerable, getCurrentQuizQuestion, getPointsAwarded, getSessionFull } from "@/lib/quiz-service";
 import { prisma } from "@/lib/prisma";
+import { readApiAuth } from "@/lib/api-auth";
 
 const answerSchema = z.object({
-  teamCode: z.string().min(2).max(24),
+  teamCode: z.string().min(2).max(24).optional(),
   optionId: z.string().nullable().optional(),
   textAnswer: z.string().max(200).nullable().optional(),
 });
@@ -38,7 +39,20 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const current = getCurrentQuizQuestion(session);
   if (!current) return badRequest("Question not found", 404);
 
-  const teamCode = parsed.data.teamCode.trim().toUpperCase();
+  let teamCode = parsed.data.teamCode?.trim().toUpperCase() ?? "";
+  if (!teamCode) {
+    const auth = readApiAuth(req);
+    if (!auth || auth.role !== "participant") return badRequest("Participant authentication required", 401);
+    const participant = await prisma.participantAccount.findUnique({
+      where: { id: auth.sub },
+      select: { teamCode: true, isActive: true },
+    });
+    if (!participant || !participant.isActive) return badRequest("Participant account is inactive", 401);
+    teamCode = participant.teamCode.trim().toUpperCase();
+  }
+
+  if (!teamCode) return badRequest("Missing team code");
+
   const team = await prisma.team.findUnique({
     where: {
       code_sessionId: {

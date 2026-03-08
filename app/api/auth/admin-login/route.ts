@@ -2,7 +2,7 @@ import { NextRequest } from "next/server";
 import { z } from "zod";
 import { badRequest, ok } from "@/lib/http";
 import { env } from "@/lib/env";
-import { setAdminSession } from "@/lib/auth";
+import { issueApiToken, setApiAuthCookies } from "@/lib/api-auth";
 
 const schema = z.object({
   password: z.string().min(1),
@@ -17,6 +17,12 @@ export async function POST(req: NextRequest) {
     return badRequest("Invalid admin password", 401);
   }
 
-  await setAdminSession();
-  return ok({ ok: true });
+  const token = issueApiToken({
+    sub: "admin",
+    role: "admin",
+  });
+
+  const response = ok({ ok: true, token });
+  setApiAuthCookies(response, { adminToken: token });
+  return response;
 }

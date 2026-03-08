@@ -4,6 +4,9 @@ const nextConfig = {
   eslint: {
     ignoreDuringBuilds: true,
   },
+  outputFileTracingIncludes: {
+    "/*": ["./prisma/dev.db", "./prisma/schema.prisma"],
+  },
   async rewrites() {
     const backendUrl = (process.env.NEXT_PUBLIC_BACKEND_URL || "").trim().replace(/\/+$/, "");
     if (!backendUrl) return [];
