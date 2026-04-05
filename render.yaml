@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: final-destination-api
+    runtime: node
+    plan: starter
+    rootDir: .
+    autoDeployTrigger: commit
+    buildCommand: npm ci && npm run prisma:generate
+    preDeployCommand: npm run prisma:deploy
+    startCommand: npm run backend:start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: 22
+      - key: DATABASE_URL
+        sync: false
+      - key: SESSION_SECRET
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: DEFAULT_PARTICIPANT_PASSWORD
+        sync: false
+      - key: BACKEND_CORS_ORIGINS
+        sync: false
