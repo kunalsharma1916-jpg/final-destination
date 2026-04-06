@@ -1,13 +1,16 @@
-import "dotenv/config";
 import bcrypt from "bcryptjs";
 import cors from "cors";
 import express, { type Request, type Response } from "express";
 import { createServer } from "http";
 import { AnswerFormat, Prisma, ScoringMode, SessionPhase } from "@prisma/client";
 import { z } from "zod";
+import { logRealtimeDebug } from "../../lib/debug-log";
+import { resolveDatabaseUrl } from "../../lib/database-url";
 import { prisma } from "../../lib/prisma";
 import { getRouteLocations } from "../../lib/route-locations";
+import { isQuestionVisiblePhase } from "../../lib/session-phase";
 import {
+  QUESTION_SYNC_LEAD_SEC,
   assertAnswerable,
   assertLaunchable,
   assertNextable,
@@ -17,23 +20,34 @@ import {
   buildDestinationSnapshot,
   computeAnswerStats,
   computeLeaderboard,
+  getQuestionRemainingWindowSec,
+  getQuestionRoundId,
+  getQuestionScoringEndAt,
   getCurrentQuizQuestion,
   getPointsAwarded,
+  getScoreAuditReason,
   getSessionFull,
+  isQuestionPendingStart,
   phasePatch,
   toPublicQuestion,
   toSessionSnapshot,
 } from "../../lib/quiz-service";
 import { attachAuth, issueToken, requireAdmin, requireParticipant, setAuthCookies } from "./auth";
 import {
+  emitAnswerLocked,
   emitAnswerStats,
   emitDestinationUpdated,
   emitLeaderboard,
+  emitRoundCompleted,
+  emitRoundStarted,
   emitQuestionRevealed,
   emitQuestionStarted,
+  emitSessionCompleted,
   emitSessionUpdated,
 } from "./realtime";
 import { initSocketServer } from "./socket";
+
+resolveDatabaseUrl();
 
 const app = express();
 
@@ -73,6 +87,10 @@ function bad(res: Response, message: string, status = 400, extra?: Record<string
   res.status(status).json({ ok: false, message, ...(extra ?? {}) });
 }
 
+function isWarmupRequest(req: Request) {
+  return req.headers["x-fd-warmup"] === "1";
+}
+
 function normalizeAnswer(value: string) {
   return value
     .toLowerCase()
@@ -89,6 +107,16 @@ function normalizeUsername(username: string) {
 function normalizeTeamCode(teamCode: string) {
   return teamCode.trim().toUpperCase();
 }
+
+app.get("/", (_req, res) => {
+  ok(res, {
+    ok: true,
+    service: "final-destination-api",
+    status: "online",
+    health: "/health",
+    apiHealth: "/api/health",
+  });
+});
 
 const participantCreateSchema = z.object({
   username: z.string().trim().min(3).max(40),
@@ -118,7 +146,7 @@ const createQuestionSchema = z.object({
   prompt: z.string().min(3),
   options: z.array(z.string().min(1)).min(2).max(6),
   correctOptionIndex: z.number().int().min(0),
-  timeLimitSec: z.number().int().min(5).max(180).default(20),
+  timeLimitSec: z.number().int().min(5).max(180).default(22),
   points: z.number().int().min(100).max(5000).default(1000),
   explanation: z.string().optional().nullable(),
 });
@@ -127,7 +155,7 @@ const updateQuestionSchema = z.object({
   prompt: z.string().min(3),
   options: z.array(z.object({ id: z.string().optional(), text: z.string().min(1) })).min(2).max(6),
   correctOptionIndex: z.number().int().min(0),
-  timeLimitSec: z.number().int().min(5).max(180).default(20),
+  timeLimitSec: z.number().int().min(5).max(180).default(22),
   points: z.number().int().min(100).max(5000).default(1000),
   explanation: z.string().optional().nullable(),
 });
@@ -540,13 +568,22 @@ app.post("/api/sessions", requireAdmin, async (req, res) => {
 
   const quiz = await prisma.quiz.findUnique({
     where: { id: parsed.data.quizId },
-    include: { questions: true },
+    select: {
+      id: true,
+      scoringMode: true,
+      initialBudget: true,
+      _count: {
+        select: {
+          questions: true,
+        },
+      },
+    },
   });
   if (!quiz) return bad(res, "Quiz not found", 404);
-  if (quiz.questions.length === 0) return bad(res, "Quiz has no questions");
+  if (quiz._count.questions === 0) return bad(res, "Quiz has no questions");
 
   const locations = await getRouteLocations();
-  const destinationCount = locations.length > 0 ? locations.length : quiz.questions.length;
+  const destinationCount = locations.length > 0 ? locations.length : quiz._count.questions;
 
   const session = await prisma.session.create({
     data: {
@@ -558,16 +595,15 @@ app.post("/api/sessions", requireAdmin, async (req, res) => {
       destinationIndex: 0,
       destinationCount,
     },
-    include: {
-      quiz: {
-        include: {
-          questions: { include: { question: { include: { options: true } } }, orderBy: { order: "asc" } },
-        },
-      },
+    select: {
+      id: true,
     },
   });
 
-  ok(res, { ok: true, session: toSessionSnapshot(session) }, 201);
+  const fullSession = await getSessionFull(session.id, { applyTimeoutClose: false });
+  if (!fullSession) return bad(res, "Session not found", 404);
+
+  ok(res, { ok: true, session: toSessionSnapshot(fullSession) }, 201);
 });
 
 app.get("/api/sessions/active", async (_req, res) => {
@@ -615,8 +651,11 @@ app.get("/api/sessions/:id", async (req, res) => {
     if (refreshed) session = refreshed;
   }
 
-  const publicQuestion = toPublicQuestion(session);
-  const currentQuestionId = session.quiz.questions[session.currentQuestionIndex]?.questionId ?? null;
+  const isAdminViewer = req.auth?.role === "admin";
+  const includeStats = isAdminViewer && (req.query.includeStats === "1" || req.query.includeStats === "true");
+  const publicQuestion =
+    isAdminViewer || isQuestionVisiblePhase(session.phase, session.pausedFromPhase) ? toPublicQuestion(session) : null;
+  const currentQuestionId = session.currentQuestion?.questionId ?? null;
 
   const teamCode = req.auth?.role === "participant" ? req.auth.teamCode ?? null : null;
 
@@ -627,18 +666,16 @@ app.get("/api/sessions/:id", async (req, res) => {
           where: { code_sessionId: { code: teamCode, sessionId: session.id } },
         })
       : null,
-    currentQuestionId ? computeAnswerStats(session.id, currentQuestionId) : null,
+    includeStats && currentQuestionId ? computeAnswerStats(session.id, currentQuestionId) : null,
   ]);
 
   let myAnswer = null;
   if (team && currentQuestionId) {
-    myAnswer = await prisma.answer.findUnique({
+    myAnswer = await prisma.answer.findFirst({
       where: {
-        sessionId_teamId_questionId: {
-          sessionId: session.id,
-          teamId: team.id,
-          questionId: currentQuestionId,
-        },
+        sessionId: session.id,
+        teamId: team.id,
+        questionId: currentQuestionId,
       },
       select: {
         optionId: true,
@@ -646,6 +683,7 @@ app.get("/api/sessions/:id", async (req, res) => {
         isCorrect: true,
         pointsAwarded: true,
       },
+      orderBy: { answeredAt: "desc" },
     });
   }
 
@@ -702,6 +740,7 @@ app.post("/api/sessions/:id/join", requireParticipant, async (req, res) => {
 });
 
 app.post("/api/sessions/:id/answer", requireParticipant, async (req, res) => {
+  if (isWarmupRequest(req)) return ok(res, { ok: true, warm: true });
   const id = req.params.id;
   const participantAccount = await prisma.participantAccount.findUnique({
     where: { id: req.auth!.sub },
@@ -767,6 +806,7 @@ app.post("/api/sessions/:id/answer", requireParticipant, async (req, res) => {
         where: { id: session.id },
         select: {
           phase: true,
+          questionStartAt: true,
           questionEndAt: true,
           currentQuestionIndex: true,
         },
@@ -774,6 +814,9 @@ app.post("/api/sessions/:id/answer", requireParticipant, async (req, res) => {
       if (!liveSession) throw new Error("Session not found");
       if (liveSession.phase !== SessionPhase.QUESTION_LIVE) {
         throw new Error("Question is not open for answers");
+      }
+      if (isQuestionPendingStart(liveSession.questionStartAt, new Date())) {
+        throw new Error("Question is starting");
       }
       if (!liveSession.questionEndAt || liveSession.questionEndAt.getTime() <= Date.now()) {
         throw new Error("Time is up");
@@ -789,11 +832,11 @@ app.post("/api/sessions/:id/answer", requireParticipant, async (req, res) => {
         isCorrect,
         base: current.question.points,
         timeLimitSec: current.question.timeLimitSec,
-        endAt: liveSession.questionEndAt,
+        endAt: getQuestionScoringEndAt(liveSession.questionEndAt),
         answeredAt,
       });
 
-      return tx.answer.create({
+      const createdAnswer = await tx.answer.create({
         data: {
           sessionId: session.id,
           teamId: team.id,
@@ -805,9 +848,47 @@ app.post("/api/sessions/:id/answer", requireParticipant, async (req, res) => {
           pointsAwarded,
         },
       });
+
+      await tx.scoreAuditLog.create({
+        data: {
+          sessionId: session.id,
+          teamId: team.id,
+          questionId: current.question.id,
+          roundId: getQuestionRoundId(current.question.roundLabel, session.activeRoundOrdinal ?? 1),
+          delta: pointsAwarded,
+          reason: getScoreAuditReason(current.question.kind, isCorrect),
+          createdAt: answeredAt,
+        },
+      });
+
+      return createdAnswer;
     });
 
-    await emitAnswerStats(session.id, current.question.id);
+    logRealtimeDebug("answer_submission", {
+      sessionId: session.id,
+      teamCode,
+      roundId: getQuestionRoundId(current.question.roundLabel, session.activeRoundOrdinal ?? 1),
+      questionId: current.question.id,
+      isCorrect,
+    });
+    logRealtimeDebug("score_change", {
+      sessionId: session.id,
+      teamCode,
+      questionId: current.question.id,
+      delta: answer.pointsAwarded,
+    });
+
+    void Promise.all([
+      emitAnswerLocked(session.id, {
+        teamCode,
+        roundId: getQuestionRoundId(current.question.roundLabel, session.activeRoundOrdinal ?? 1),
+        questionId: current.question.id,
+        delta: answer.pointsAwarded,
+        serverNowMs: Date.now(),
+      }),
+      emitAnswerStats(session.id, current.question.id),
+    ]).catch(() => null);
+
     return ok(res, {
       ok: true,
       answer: {
@@ -829,19 +910,20 @@ app.post("/api/sessions/:id/answer", requireParticipant, async (req, res) => {
 });
 
 app.post("/api/sessions/:id/start", requireAdmin, async (req, res) => {
+  if (isWarmupRequest(req)) return ok(res, { ok: true, warm: true });
   const id = req.params.id;
   const session = await getSessionFull(id);
   if (!session) return bad(res, "Session not found", 404);
   if (session.phase === SessionPhase.ENDED) return bad(res, "Session ended");
-  if (session.phase !== SessionPhase.DRAFT && session.phase !== SessionPhase.LOBBY) {
-    return bad(res, "Session can only be started from draft or lobby");
+  if (session.phase !== SessionPhase.DRAFT) {
+    return bad(res, "Session can only be started once from draft");
   }
 
   const patch = phasePatch(SessionPhase.LOBBY);
   const updatedCount = await prisma.session.updateMany({
     where: {
       id,
-      phase: { in: [SessionPhase.DRAFT, SessionPhase.LOBBY] },
+      phase: SessionPhase.DRAFT,
     },
     data: {
       ...patch,
@@ -860,11 +942,17 @@ app.post("/api/sessions/:id/start", requireAdmin, async (req, res) => {
   const updated = await getSessionFull(id, { applyTimeoutClose: false });
   if (!updated) return bad(res, "Session not found", 404);
 
-  await Promise.all([emitSessionUpdated(id), emitLeaderboard(id), emitDestinationUpdated(id)]);
+  logRealtimeDebug("session_start", {
+    sessionId: id,
+    activeRoundId: updated.activeRound?.id ?? null,
+  });
+
+  void Promise.all([emitSessionUpdated(id), emitLeaderboard(id), emitDestinationUpdated(id)]).catch(() => null);
   ok(res, { ok: true, session: toSessionSnapshot(updated) });
 });
 
 app.post("/api/sessions/:id/launch", requireAdmin, async (req, res) => {
+  if (isWarmupRequest(req)) return ok(res, { ok: true, warm: true });
   const id = req.params.id;
   const session = await getSessionFull(id);
   if (!session) return bad(res, "Session not found", 404);
@@ -878,7 +966,8 @@ app.post("/api/sessions/:id/launch", requireAdmin, async (req, res) => {
   const current = getCurrentQuizQuestion(session);
   if (!current) return bad(res, "Question unavailable", 404);
   const now = new Date();
-  const endAt = new Date(now.getTime() + current.question.timeLimitSec * 1000);
+  const startAt = new Date(now.getTime() + QUESTION_SYNC_LEAD_SEC * 1000);
+  const endAt = new Date(startAt.getTime() + current.question.timeLimitSec * 1000);
   const patch = phasePatch(SessionPhase.QUESTION_LIVE);
 
   const updatedCount = await prisma.session.updateMany({
@@ -888,7 +977,7 @@ app.post("/api/sessions/:id/launch", requireAdmin, async (req, res) => {
     },
     data: {
       ...patch,
-      questionStartAt: now,
+      questionStartAt: startAt,
       questionEndAt: endAt,
       pauseRemainingSec: null,
     },
@@ -900,7 +989,25 @@ app.post("/api/sessions/:id/launch", requireAdmin, async (req, res) => {
   const updated = await getSessionFull(id, { applyTimeoutClose: false });
   if (!updated) return bad(res, "Session not found", 404);
 
-  await Promise.all([emitSessionUpdated(id), emitQuestionStarted(id)]);
+  logRealtimeDebug("question_start", {
+    sessionId: id,
+    roundId: updated.activeRound?.id ?? null,
+    questionId: updated.currentQuestion?.question.id ?? null,
+  });
+
+  const realtimeTasks = [emitSessionUpdated(id), emitQuestionStarted(id)];
+  if ((updated.activeRoundQuestionIndex ?? 0) === 1 && updated.activeRound) {
+    realtimeTasks.push(
+      emitRoundStarted(id, {
+        roundId: updated.activeRound.id,
+        roundKey: updated.activeRound.key,
+        roundTitle: updated.activeRound.title,
+        ordinal: updated.activeRound.ordinal,
+      }),
+    );
+  }
+
+  void Promise.all(realtimeTasks).catch(() => null);
   ok(res, {
     ok: true,
     session: toSessionSnapshot(updated),
@@ -909,6 +1016,7 @@ app.post("/api/sessions/:id/launch", requireAdmin, async (req, res) => {
 });
 
 app.post("/api/sessions/:id/reveal", requireAdmin, async (req, res) => {
+  if (isWarmupRequest(req)) return ok(res, { ok: true, warm: true });
   const id = req.params.id;
   const session = await getSessionFull(id);
   if (!session) return bad(res, "Session not found", 404);
@@ -949,14 +1057,14 @@ app.post("/api/sessions/:id/reveal", requireAdmin, async (req, res) => {
   const updated = await getSessionFull(id, { applyTimeoutClose: false });
   if (!updated) return bad(res, "Session not found", 404);
 
-  await Promise.all([
+  void Promise.all([
     emitSessionUpdated(id),
     emitQuestionRevealed(id, {
       correctOptionId,
       explanation: current.question.explanation ?? null,
     }),
     emitAnswerStats(id, current.questionId),
-  ]);
+  ]).catch(() => null);
 
   ok(res, {
     ok: true,
@@ -968,6 +1076,7 @@ app.post("/api/sessions/:id/reveal", requireAdmin, async (req, res) => {
   });
 });
 app.post("/api/sessions/:id/next", requireAdmin, async (req, res) => {
+  if (isWarmupRequest(req)) return ok(res, { ok: true, warm: true });
   const id = req.params.id;
   const session = await getSessionFull(id);
   if (!session) return bad(res, "Session not found", 404);
@@ -979,7 +1088,7 @@ app.post("/api/sessions/:id/next", requireAdmin, async (req, res) => {
   }
 
   const nextIndex = session.currentQuestionIndex + 1;
-  const hasMore = nextIndex < session.quiz.questions.length;
+  const hasMore = nextIndex < session.questionCount;
   const patch = hasMore ? phasePatch(SessionPhase.LOBBY) : phasePatch(SessionPhase.ENDED);
 
   const updatedCount = await prisma.session.updateMany({
@@ -1004,11 +1113,38 @@ app.post("/api/sessions/:id/next", requireAdmin, async (req, res) => {
   const updated = await getSessionFull(id, { applyTimeoutClose: false });
   if (!updated) return bad(res, "Session not found", 404);
 
-  await Promise.all([emitSessionUpdated(id), emitLeaderboard(id)]);
+  const crossedRoundBoundary =
+    hasMore && session.activeRound && updated.activeRound && session.activeRound.id !== updated.activeRound.id;
+
+  if (crossedRoundBoundary && session.activeRound) {
+    logRealtimeDebug("round_complete", {
+      sessionId: id,
+      roundId: session.activeRound.id,
+      roundTitle: session.activeRound.title,
+    });
+  }
+
+  const realtimeTasks = [emitSessionUpdated(id), emitLeaderboard(id)];
+  if (crossedRoundBoundary && session.activeRound) {
+    realtimeTasks.push(
+      emitRoundCompleted(id, {
+        roundId: session.activeRound.id,
+        roundKey: session.activeRound.key,
+        roundTitle: session.activeRound.title,
+        ordinal: session.activeRound.ordinal,
+      }),
+    );
+  }
+  if (!hasMore) {
+    realtimeTasks.push(emitSessionCompleted(id, toSessionSnapshot(updated)));
+  }
+
+  void Promise.all(realtimeTasks).catch(() => null);
   ok(res, { ok: true, session: toSessionSnapshot(updated) });
 });
 
 app.post("/api/sessions/:id/pause", requireAdmin, async (req, res) => {
+  if (isWarmupRequest(req)) return ok(res, { ok: true, warm: true });
   const id = req.params.id;
   const session = await getSessionFull(id);
   if (!session) return bad(res, "Session not found", 404);
@@ -1021,7 +1157,10 @@ app.post("/api/sessions/:id/pause", requireAdmin, async (req, res) => {
 
   const remainingSec =
     session.phase === SessionPhase.QUESTION_LIVE && session.questionEndAt
-      ? Math.max(0, Math.ceil((session.questionEndAt.getTime() - Date.now()) / 1000))
+      ? getQuestionRemainingWindowSec({
+          startAt: session.questionStartAt,
+          endAt: session.questionEndAt,
+        })
       : null;
 
   const patch = phasePatch(SessionPhase.PAUSED, session.phase);
@@ -1035,6 +1174,7 @@ app.post("/api/sessions/:id/pause", requireAdmin, async (req, res) => {
     data: {
       ...patch,
       pauseRemainingSec: remainingSec,
+      questionStartAt: null,
       questionEndAt: null,
     },
   });
@@ -1046,11 +1186,12 @@ app.post("/api/sessions/:id/pause", requireAdmin, async (req, res) => {
   const updated = await getSessionFull(id, { applyTimeoutClose: false });
   if (!updated) return bad(res, "Session not found", 404);
 
-  await emitSessionUpdated(id);
+  void emitSessionUpdated(id).catch(() => null);
   ok(res, { ok: true, session: toSessionSnapshot(updated) });
 });
 
 app.post("/api/sessions/:id/resume", requireAdmin, async (req, res) => {
+  if (isWarmupRequest(req)) return ok(res, { ok: true, warm: true });
   const id = req.params.id;
   const session = await getSessionFull(id, { applyTimeoutClose: false });
   if (!session) return bad(res, "Session not found", 404);
@@ -1075,7 +1216,12 @@ app.post("/api/sessions/:id/resume", requireAdmin, async (req, res) => {
       : SessionPhase.QUESTION_CLOSED
     : safeRestorePhase;
 
-  const endAt = resumedPhase === SessionPhase.QUESTION_LIVE ? new Date(Date.now() + (session.pauseRemainingSec ?? 0) * 1000) : null;
+  const startAt =
+    resumedPhase === SessionPhase.QUESTION_LIVE ? new Date(Date.now() + QUESTION_SYNC_LEAD_SEC * 1000) : null;
+  const endAt =
+    resumedPhase === SessionPhase.QUESTION_LIVE && startAt
+      ? new Date(startAt.getTime() + (session.pauseRemainingSec ?? 0) * 1000)
+      : null;
   const patch = phasePatch(resumedPhase);
 
   const updatedCount = await prisma.session.updateMany({
@@ -1085,6 +1231,7 @@ app.post("/api/sessions/:id/resume", requireAdmin, async (req, res) => {
     },
     data: {
       ...patch,
+      questionStartAt: startAt,
       questionEndAt: endAt,
       pauseRemainingSec: null,
     },
@@ -1097,11 +1244,12 @@ app.post("/api/sessions/:id/resume", requireAdmin, async (req, res) => {
   const updated = await getSessionFull(id, { applyTimeoutClose: false });
   if (!updated) return bad(res, "Session not found", 404);
 
-  await emitSessionUpdated(id);
+  void emitSessionUpdated(id).catch(() => null);
   ok(res, { ok: true, session: toSessionSnapshot(updated) });
 });
 
 app.post("/api/sessions/:id/end", requireAdmin, async (req, res) => {
+  if (isWarmupRequest(req)) return ok(res, { ok: true, warm: true });
   const id = req.params.id;
   const session = await getSessionFull(id, { applyTimeoutClose: false });
   if (!session) return bad(res, "Session not found", 404);
@@ -1127,8 +1275,13 @@ app.post("/api/sessions/:id/end", requireAdmin, async (req, res) => {
   const updated = await getSessionFull(id, { applyTimeoutClose: false });
   if (!updated) return bad(res, "Session not found", 404);
 
-  await Promise.all([emitSessionUpdated(id), emitLeaderboard(id)]);
-  ok(res, { ok: true, session: toSessionSnapshot(updated) });
+  logRealtimeDebug("session_complete", {
+    sessionId: id,
+  });
+
+  const snapshot = toSessionSnapshot(updated);
+  void Promise.all([emitSessionUpdated(id, snapshot), emitLeaderboard(id), emitSessionCompleted(id, snapshot)]).catch(() => null);
+  ok(res, { ok: true, session: snapshot });
 });
 
 app.post("/api/sessions/:id/destination", requireAdmin, async (req, res) => {
@@ -1185,7 +1338,7 @@ app.post("/api/sessions/:id/destination", requireAdmin, async (req, res) => {
   const updated = await getSessionFull(id, { applyTimeoutClose: false });
   if (!updated) return bad(res, "Session not found", 404);
 
-  await Promise.all([emitSessionUpdated(id), emitDestinationUpdated(id)]);
+  void Promise.all([emitSessionUpdated(id), emitDestinationUpdated(id)]).catch(() => null);
   ok(res, {
     ok: true,
     session: toSessionSnapshot(updated),
